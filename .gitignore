@@ -1,0 +1,29 @@
+﻿# Ambiente Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Dataset e imagens - NAO SUBIR
+LCC/
+LCC.zip
+*.rar
+*.zip
+dataset_lcc_processado/
+
+# Modelos treinados - NAO SUBIR
+modelos_treinados/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Resultados gerados localmente
+resultados/
+*.csv
+*.txt
+*.png
+
+# Sistema
+.DS_Store
+Thumbs.db

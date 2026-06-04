@@ -20,7 +20,6 @@ Componentes do grupo:
 import os
 import re
 import csv
-import json
 import time
 import shutil
 import zipfile
@@ -250,58 +249,6 @@ def segment_region_growing(gray: np.ndarray):
     return segmented, mask
 
 
-def segment_graph_cut(gray: np.ndarray):
-    """Segmentação automática usando GrabCut (Graph Cuts) com Fallback Seguro."""
-    img_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-    H, W = gray.shape
-
-    # 1. Acha a caixa (Bounding Box) da mama de forma inteligente
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    
-    # Pega apenas o maior objeto para evitar que a caixa fique numa letra no canto da imagem
-    contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        c = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(c)
-    else:
-        x, y, w, h = 10, 10, W-20, H-20
-
-    # 2. Trava de Segurança Crítica para o GrabCut!
-    # Garante que a caixa nunca encoste na borda da imagem (sempre sobra fundo fora dela)
-    x = max(2, x - 5)
-    y = max(2, y - 5)
-    w = min(W - x - 2, w + 10)
-    h = min(H - y - 2, h + 10)
-
-    # Se a caixa ficar bizarramente pequena, força um tamanho seguro
-    if w < 20 or h < 20:
-         x, y, w, h = 2, 2, W - 4, H - 4
-
-    rect = (x, y, w, h)
-
-    bgdModel = np.zeros((1, 65), np.float64)
-    fgdModel = np.zeros((1, 65), np.float64)
-    mask = np.zeros(gray.shape, np.uint8)
-
-    # 3. Executa o Grafo. Se a imagem estiver muito ruim e quebrar a matemática, 
-    # o 'except' intercepta a queda e usa o Otsu como salva-vidas para não crashar o Dataset.
-    try:
-        cv2.grabCut(img_bgr, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
-    except cv2.error:
-        return segment_otsu(gray)
-
-    mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
-    final_mask = mask2 * 255
-
-    k_size = max(5, int(min(H, W) * 0.015))
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
-    final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-
-    segmented = cv2.bitwise_and(gray, gray, mask=final_mask)
-    return segmented, final_mask
-
-
 def segment_morphological_reconstruction(gray: np.ndarray):
     """Segmentação por Filtro Conexo simulando Max-Tree (Abertura por Reconstrução)."""
     k_size = 25
@@ -337,8 +284,6 @@ def segment_breast_region(gray: np.ndarray, method="Otsu (Padrão)"):
     """Roteador para os métodos de segmentação."""
     if method == "Region Growing":
         return segment_region_growing(gray)
-    elif method == "Graph Cuts (GrabCut)":
-        return segment_graph_cut(gray)
     elif method == "Filtro Conexo (Max-Tree)":
         return segment_morphological_reconstruction(gray)
     else:
@@ -848,16 +793,6 @@ def get_target_layer(model, model_name):
 
 
 def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, log=print, seg_method="Otsu (Padrão)"):
-    """
-    Classifica uma imagem individual e gera Grad-CAM.
-
-    Ajuste importante desta versao:
-    - Como o projeto usa transferencia de aprendizado e congela as camadas convolucionais,
-      o tensor de entrada precisa ter requires_grad=True para o Grad-CAM conseguir calcular
-      gradientes na ultima camada convolucional.
-    - A captura do gradiente foi feita de forma mais robusta usando retain_grad() na ativacao,
-      evitando o erro "list index out of range" quando o backward hook nao retorna gradientes.
-    """
     device = get_device()
     model, checkpoint = load_checkpoint_model(model_name, task, input_kind)
     model = model.to(device)
@@ -875,7 +810,6 @@ def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, 
 
     def forward_hook(module, inp, out):
         saved["activation"] = out
-        # Necessario para acessar .grad do tensor de ativacao depois do backward.
         if hasattr(out, "retain_grad"):
             out.retain_grad()
 
@@ -902,14 +836,12 @@ def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, 
         if gradient is None:
             raise RuntimeError(
                 "Nao foi possivel calcular gradientes para o Grad-CAM. "
-                "Isso geralmente acontece quando a entrada nao permite gradiente. "
-                "Use esta versao corrigida do script."
+                "Isso geralmente acontece quando a entrada nao permite gradiente."
             )
 
         act = activation.detach()
         grad = gradient.detach()
 
-        # Esperado: [batch, canais, altura, largura].
         if act.ndim != 4 or grad.ndim != 4:
             raise RuntimeError(
                 f"Formato inesperado para Grad-CAM. Ativacao={tuple(act.shape)}, gradiente={tuple(grad.shape)}"
@@ -949,30 +881,26 @@ def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, 
         handle.remove()
 
 
-
-
 # ============================================================
 # 9. INTERFACE GRAFICA TKINTER - VERSAO MODERNA E DIDATICA
 # ============================================================
 
 UI = {
-    "bg": "#EEF6F8",          # fundo azul-esverdeado claro, estilo painel clínico
+    "bg": "#EEF6F8",          
     "card": "#FFFFFF",
     "card2": "#F6FBFC",
-    "text": "#12313A",        # azul-petróleo escuro
+    "text": "#12313A",        
     "muted": "#5D7680",
-    "primary": "#0F7C90",     # teal médico
+    "primary": "#0F7C90",     
     "primary_dark": "#0B5F6E",
-    "success": "#138A5B",     # verde clínico
+    "success": "#138A5B",     
     "warning": "#E28A10",
     "danger": "#C24141",
     "border": "#C9DDE3",
-    "canvas": "#0B1F27",      # visor escuro para mamografia
+    "canvas": "#0B1F27",      
 }
 
-
 def apply_modern_theme(root):
-    """Aplica um tema visual mais atual sem depender de bibliotecas externas."""
     root.configure(bg=UI["bg"])
     style = ttk.Style(root)
     try:
@@ -1030,16 +958,6 @@ def apply_modern_theme(root):
     return style
 
 class ImagePanel(ttk.LabelFrame):
-    """
-    Painel de imagem com zoom moderno:
-    - arrastar com o mouse para mover a imagem;
-    - roda do mouse para zoom no ponto apontado;
-    - duplo clique para alternar entre ajustar e 100%;
-    - botao direito para ajustar;
-    - sem depender das barras laterais de rolagem.
-
-    Tudo permanece no mesmo arquivo .py, conforme exigido no trabalho.
-    """
     def __init__(self, parent, title="Imagem"):
         super().__init__(parent, text=title, padding=8)
         self.title = title
@@ -1070,19 +988,17 @@ class ImagePanel(ttk.LabelFrame):
         canvas_frame = ttk.Frame(self)
         canvas_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Sem barras de rolagem visiveis: a movimentacao agora e feita arrastando a propria imagem.
         self.canvas = tk.Canvas(canvas_frame, bg=UI["canvas"], highlightthickness=0, bd=0, cursor="hand2")
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Gestos de navegacao da imagem.
-        self.canvas.bind("<MouseWheel>", self.on_mousewheel_zoom)      # Windows
-        self.canvas.bind("<Button-4>", self.on_linux_wheel_up)         # Linux, caso alguem rode fora do Windows
+        self.canvas.bind("<MouseWheel>", self.on_mousewheel_zoom)      
+        self.canvas.bind("<Button-4>", self.on_linux_wheel_up)         
         self.canvas.bind("<Button-5>", self.on_linux_wheel_down)
         self.canvas.bind("<ButtonPress-1>", self.on_drag_start)
         self.canvas.bind("<B1-Motion>", self.on_drag_move)
         self.canvas.bind("<ButtonRelease-1>", self.on_drag_end)
         self.canvas.bind("<Double-Button-1>", self.on_double_click)
-        self.canvas.bind("<Button-3>", lambda event: self.fit())       # botao direito ajusta a imagem
+        self.canvas.bind("<Button-3>", lambda event: self.fit())       
         self.canvas.bind("<Configure>", self.on_resize)
 
         self.placeholder = self.canvas.create_text(
@@ -1131,10 +1047,6 @@ class ImagePanel(ttk.LabelFrame):
         return scale
 
     def render(self, center=False, keep_canvas_point=None, mouse_xy=None):
-        """
-        Desenha a imagem. Quando keep_canvas_point e mouse_xy sao passados,
-        tenta manter o ponto sob o cursor estavel durante o zoom.
-        """
         self.canvas.delete("all")
 
         if self.original_pil is None:
@@ -1161,7 +1073,6 @@ class ImagePanel(ttk.LabelFrame):
         self.current_tk = ImageTk.PhotoImage(resized)
 
         pad = 12
-        # Se a imagem couber no painel, centraliza. Se for maior, ancora no canto com margem.
         x0 = max(pad, int((canvas_w - new_w) / 2)) if new_w < canvas_w else pad
         y0 = max(pad, int((canvas_h - new_h) / 2)) if new_h < canvas_h else pad
 
@@ -1175,7 +1086,6 @@ class ImagePanel(ttk.LabelFrame):
         if center:
             self.center_view()
         elif keep_canvas_point is not None and mouse_xy is not None:
-            # Mantem aproximadamente o mesmo ponto da imagem sob o mouse apos o zoom.
             old_x, old_y = keep_canvas_point
             mx, my = mouse_xy
             new_x = old_x * (self._current_scale() / max(self._old_scale_for_zoom, 1e-6))
@@ -1227,7 +1137,6 @@ class ImagePanel(ttk.LabelFrame):
         self._old_scale_for_zoom = old_scale
 
         if event is not None:
-            # Ponto atual do canvas antes de redesenhar.
             keep_point = (self.canvas.canvasx(event.x), self.canvas.canvasy(event.y))
             mouse_xy = (event.x, event.y)
         else:
@@ -1259,7 +1168,6 @@ class ImagePanel(ttk.LabelFrame):
     def on_mousewheel_zoom(self, event):
         if self.original_pil is None:
             return
-        # Na V6, a roda sempre da zoom. Para mover, basta arrastar a imagem.
         if event.delta > 0:
             self._zoom_at(1.15, event)
         else:
@@ -1282,7 +1190,6 @@ class ImagePanel(ttk.LabelFrame):
     def on_drag_move(self, event):
         if self.original_pil is None or not self._is_dragging:
             return
-        # gain=1 deixa o movimento mais natural, sem pular demais.
         self.canvas.scan_dragto(event.x, event.y, gain=1)
 
     def on_drag_end(self, event):
@@ -1292,7 +1199,6 @@ class ImagePanel(ttk.LabelFrame):
     def on_double_click(self, event):
         if self.original_pil is None:
             return
-        # Duplo clique alterna entre Ajustar e 100%, que e o comportamento mais simples para apresentar.
         if self.fit_to_panel:
             self.real_size()
         else:
@@ -1327,15 +1233,9 @@ class MammoApp:
 
         self.buttons_to_lock = []
         self.build_layout()
-        self.set_help_initial()
-        self.update_dataset_status()
         self.auto_detect_resources()
 
-    # --------------------------------------------------------
-    # Layout principal
-    # --------------------------------------------------------
     def build_layout(self):
-        # Topo visual, para o programa parecer um aplicativo de fato e não uma janela antiga.
         header = ttk.Frame(self.root, style="Header.TFrame", padding=(18, 14))
         header.pack(fill=tk.X)
 
@@ -1359,15 +1259,12 @@ class MammoApp:
 
         self.left = ttk.Frame(main, padding=4)
         self.center = ttk.Frame(main, padding=4)
-        self.right = ttk.Frame(main, padding=4)
 
         main.add(self.left, weight=0)
         main.add(self.center, weight=5)
-        main.add(self.right, weight=2)
 
         self.build_left_controls()
         self.build_center_viewer()
-        self.build_right_explanations()
         self.build_bottom_log()
 
     def add_button(self, parent, text, command, pady=3, style="TButton"):
@@ -1388,7 +1285,6 @@ class MammoApp:
         self.control_tabs.add(tab_data, text="1. Dados")
         self.control_tabs.add(tab_ai, text="2. IA")
         self.control_tabs.add(tab_test, text="3. Testes")
-        self.control_tabs.add(tab_help, text="4. Entrega")
 
         # Aba 1 - dados
         ds_frame = ttk.LabelFrame(tab_data, text="Dataset LCC já extraído")
@@ -1405,15 +1301,15 @@ class MammoApp:
         ttk.Label(ds_frame, text="Pasta selecionada:", style="Card.TLabel").pack(anchor="w", padx=6, pady=(6, 0))
         ttk.Entry(ds_frame, textvariable=self.source_path, width=48).pack(fill=tk.X, padx=6, pady=5)
 
-        # === MENU DE SEGMENTAÇÃO ADICIONADO AQUI, DEPOIS DA PASTA ===
         ttk.Label(ds_frame, text="Método de Segmentação:", style="Card.TLabel").pack(anchor="w", padx=6, pady=(6, 0))
         ttk.Combobox(
             ds_frame,
             textvariable=self.seg_method,
-            values=["Otsu (Padrão)", "Region Growing", "Graph Cuts (GrabCut)", "Filtro Conexo (Max-Tree)"],
+            values=["Otsu (Padrão)", "Region Growing", "Filtro Conexo (Max-Tree)"],
             state="readonly"
         ).pack(fill=tk.X, padx=6, pady=3)
 
+        self.add_button(ds_frame, "Testar método em UMA imagem", self.run_preview_segmentation, pady=(2, 8), style="Warning.TButton")
         self.add_button(ds_frame, "Selecionar pasta LCC", self.select_folder, style="Primary.TButton")
         self.add_button(ds_frame, "Preparar dataset e segmentar", self.run_prepare_dataset, pady=8, style="Success.TButton")
         self.add_button(ds_frame, "Ver resumo do dataset", self.show_dataset_summary, pady=2)
@@ -1504,41 +1400,7 @@ class MammoApp:
             style="Card.TLabel",
         ).pack(anchor="w", padx=6, pady=8)
 
-        # Aba 4 - entrega
-        obs = ttk.LabelFrame(tab_help, text="Entrega e apresentação")
-        obs.pack(fill=tk.X, pady=6)
-        ttk.Label(
-            obs,
-            text="Canvas: envie somente o .py único + relatório. Não envie dataset, imagens, pasta processada nem pesos treinados.\n\nApresentação local: mantenha dataset_lcc_processado, modelos_treinados e resultados na pasta do projeto para demonstrar sem retreinar.",
-            foreground=UI["danger"],
-            wraplength=330,
-            justify=tk.LEFT,
-            style="Card.TLabel",
-        ).pack(anchor="w", padx=6, pady=8)
-
-        checklist = ttk.LabelFrame(tab_help, text="Checklist rápido")
-        checklist.pack(fill=tk.X, pady=6)
-        ttk.Label(
-            checklist,
-            text="1. Dataset preparado.\n2. Modelos treinados.\n3. Métricas salvas.\n4. Grad-CAM funcionando.\n5. Relatório com tabelas e discussão.",
-            wraplength=330,
-            justify=tk.LEFT,
-            style="Card.TLabel",
-        ).pack(anchor="w", padx=6, pady=8)
-
     def build_center_viewer(self):
-        status_frame = ttk.LabelFrame(self.center, text="Status do experimento")
-        status_frame.pack(fill=tk.X, pady=(0, 8))
-
-        top = ttk.Frame(status_frame, style="Card.TFrame")
-        top.pack(fill=tk.X, padx=8, pady=(8, 2))
-        ttk.Label(top, textvariable=self.status_var, style="Status.TLabel").pack(anchor="w")
-        ttk.Label(top, textvariable=self.next_step_var, foreground=UI["primary"], background=UI["card"], wraplength=820).pack(anchor="w", pady=(2, 4))
-        ttk.Label(top, textvariable=self.device_var, foreground=UI["muted"], background=UI["card"]).pack(anchor="w")
-
-        self.progress = ttk.Progressbar(status_frame, mode="indeterminate")
-        self.progress.pack(fill=tk.X, padx=8, pady=(4, 8))
-
         view_frame = ttk.PanedWindow(self.center, orient=tk.HORIZONTAL)
         view_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -1546,27 +1408,6 @@ class MammoApp:
         self.image_right = ImagePanel(view_frame, title="Resultado / Máscara / Grad-CAM")
         view_frame.add(self.image_left, weight=1)
         view_frame.add(self.image_right, weight=1)
-
-    def build_right_explanations(self):
-        self.notebook = ttk.Notebook(self.right)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
-
-        self.guide_text = self.create_text_tab("Fluxo clínico")
-        self.dataset_text = self.create_text_tab("Dataset LCC")
-        self.method_text = self.create_text_tab("Segmentação/IA")
-        self.results_text = self.create_text_tab("Métricas")
-        self.presentation_text = self.create_text_tab("Apresentação")
-
-    def create_text_tab(self, title):
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text=title)
-        txt = tk.Text(frame, wrap=tk.WORD, height=12, font=("Segoe UI", 10), bg="#FFFFFF", fg=UI["text"], relief="flat", padx=12, pady=12)
-        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scroll = ttk.Scrollbar(frame, command=txt.yview)
-        scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        txt.config(yscrollcommand=scroll.set)
-        txt.config(state=tk.DISABLED)
-        return txt
 
     def build_bottom_log(self):
         log_frame = ttk.LabelFrame(self.center, text="Log detalhado do que o programa esta fazendo")
@@ -1578,208 +1419,6 @@ class MammoApp:
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=scroll.set)
 
-    # --------------------------------------------------------
-    # Textos didaticos
-    # --------------------------------------------------------
-    def set_text(self, widget, content):
-        widget.config(state=tk.NORMAL)
-        widget.delete("1.0", tk.END)
-        widget.insert(tk.END, content)
-        widget.config(state=tk.DISABLED)
-
-    def set_help_initial(self):
-        self.set_text(self.guide_text,
-"""FLUXO CLÍNICO-DIDÁTICO DA APLICAÇÃO
-
-1) Preparação dos dados
-   - Selecione somente a pasta LCC já extraída.
-   - A pasta deve conter D + left + CC, E + left + CC, F + left + CC e G + left + CC.
-   - Clique em Preparar dataset e segmentar.
-
-2) Segmentação mamográfica
-   - O sistema normaliza a imagem.
-   - Detecta a região da mama.
-   - Remove fundo e anotações por máscara.
-   - Salva imagem original normalizada, máscara e imagem segmentada.
-
-3) Classificação
-   - Binary: BIRADS I+II contra BIRADS III+IV.
-   - 4classes: BIRADS I, II, III e IV separadamente.
-   - Redes disponíveis: EfficientNet-B0, ResNet18 e ResNet50.
-
-4) Explicabilidade
-   - Use Grad-CAM para mostrar visualmente a região que influenciou a decisão da rede.
-   - O mapa é qualitativo e não substitui diagnóstico médico.
-
-5) Demonstração rápida
-   - A melhor configuração binária dos seus testes foi EfficientNet-B0 + segmentado.
-   - Para 4 classes, a melhor foi EfficientNet-B0 + original.
-""")
-
-        self.set_text(self.dataset_text,
-"""DATASET LCC
-
-LCC significa Left Cranio-Caudal:
-- Left: mama esquerda.
-- CC: incidência crânio-caudal.
-
-Estrutura esperada nesta versão:
-LCC/
-  D + left + CC/
-  E + left + CC/
-  F + left + CC/
-  G + left + CC/
-
-Mapeamento das classes:
-- D -> BIRADS I
-- E -> BIRADS II
-- F -> BIRADS III
-- G -> BIRADS IV
-
-Classificação binária:
-- Classe 0: BIRADS I + BIRADS II
-- Classe 1: BIRADS III + BIRADS IV
-
-Classificação em 4 classes:
-- Classe 0: BIRADS I
-- Classe 1: BIRADS II
-- Classe 2: BIRADS III
-- Classe 3: BIRADS IV
-
-Regra de divisão:
-- Imagem com número múltiplo de 4: teste.
-- Demais imagens: treino.
-""")
-
-        self.set_text(self.method_text,
-"""SEGMENTAÇÃO E MODELO DE IA
-
-Segmentação:
-1) Leitura da imagem em tons de cinza.
-2) Normalização robusta para 8 bits.
-3) Suavização com filtro Gaussiano.
-4) Limiarização automática de Otsu.
-5) Operações morfológicas para limpeza.
-6) Maior componente conexo como região da mama.
-7) Aplicação da máscara para remover fundo e anotações.
-
-Redes neurais:
-- EfficientNet-B0 com transferência de aprendizado.
-- ResNet18/ResNet50 com transferência de aprendizado.
-- Camadas convolucionais congeladas.
-- Camada final substituída e treinada para a tarefa escolhida.
-
-Aumento de dados:
-- Apenas no treinamento.
-- Rotações: -20, -10, 0, 10 e 20 graus.
-
-Grad-CAM:
-- Mostra regiões que contribuíram para a decisão da rede.
-- Usado como apoio visual no relatório e na apresentação.
-""")
-
-        self.set_text(self.results_text,
-"""MÉTRICAS E RESULTADOS
-
-Para classificação binária, observar:
-- Acurácia.
-- Precisão.
-- Sensibilidade.
-- Especificidade.
-- F1-score.
-- Matriz de confusão.
-
-Para 4 classes, observar:
-- Acurácia.
-- F1 macro.
-- Sensibilidade média.
-- Especificidade média.
-- Matriz de confusão.
-
-Resultados obtidos pelo grupo:
-- Melhor binário: EfficientNet-B0 + segmentado, acurácia 88,14%.
-- Melhor 4 classes: EfficientNet-B0 + original, acurácia 69,55%.
-
-Interpretação importante:
-A segmentação ajudou na classificação binária, mas as imagens originais tiveram melhor desempenho na tarefa de 4 classes.
-""")
-
-        self.set_text(self.presentation_text,
-"""ROTEIRO DE APRESENTAÇÃO
-
-1) Abrir a aplicação.
-2) Mostrar a aba Dados e explicar o dataset LCC.
-3) Abrir uma imagem e demonstrar a segmentação.
-4) Mostrar o resumo do dataset: treino/teste por classe.
-5) Avaliar o modelo EfficientNet-B0 + binary + segmentado.
-6) Mostrar a matriz de confusão e as métricas.
-7) Gerar Grad-CAM de uma imagem F ou G.
-8) Explicar que Grad-CAM é apoio visual, não laudo médico.
-9) Mostrar comparação com 4 classes e discutir a dificuldade maior.
-10) Fechar com a comparação original × segmentado.
-
-Entrega no Canvas:
-Enviar apenas o arquivo .py único e o relatório. Não enviar dataset, imagens, modelos .pt ou pasta resultados.
-""")
-
-    def set_explanation_for_segmentation(self):
-        self.notebook.select(2)
-        self.set_text(self.method_text,
-"""SEGMENTACAO VISUALIZADA
-
-Na tela da esquerda voce ve a imagem original normalizada.
-Na tela da direita voce ve o resultado da segmentacao.
-
-O objetivo da segmentacao e deixar para a rede apenas a regiao da mama.
-Com isso, fundo preto, letras, marcadores e anotacoes tendem a ser removidos.
-
-Como interpretar:
-- Se a mama continua visivel e o fundo foi removido, a segmentacao esta boa.
-- Se uma parte grande da mama sumiu, a mascara esta agressiva demais.
-- Se sobraram muitas anotacoes, a mascara esta permissiva demais.
-
-Use o zoom para verificar bordas, marcadores e regioes removidas.
-""")
-
-    def set_explanation_for_training(self):
-        self.notebook.select(2)
-        self.set_text(self.method_text,
-"""TREINAMENTO EM ANDAMENTO
-
-O programa esta usando transferencia de aprendizado:
-
-1) Carrega uma rede pre-treinada.
-2) Congela a parte que ja sabe extrair caracteristicas visuais gerais.
-3) Substitui a camada final da rede.
-4) Treina essa camada final com as imagens de mamografia do LCC.
-
-Durante o treino, cada imagem de treino gera 5 versoes:
-- rotacao -20 graus;
-- rotacao -10 graus;
-- rotacao 0 grau;
-- rotacao 10 graus;
-- rotacao 20 graus.
-
-Isso aumenta a quantidade de exemplos e ajuda a reduzir overfitting.
-""")
-
-    def set_explanation_for_gradcam(self):
-        self.notebook.select(2)
-        self.set_text(self.method_text,
-"""GRAD-CAM
-
-A imagem da direita mostra um mapa de calor sobre a mamografia.
-
-Interpretacao:
-- Regioes mais quentes indicam maior influencia na decisao da rede.
-- Regioes frias tiveram menor influencia.
-
-No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao da mama ou se esta sendo influenciada por fundo, bordas ou anotacoes.
-""")
-
-    # --------------------------------------------------------
-    # Log, status e tarefas
-    # --------------------------------------------------------
     def log(self, msg):
         self.log_text.insert(tk.END, str(msg) + "\n")
         self.log_text.see(tk.END)
@@ -1790,11 +1429,7 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
 
     def set_busy(self, busy=True, status=None):
         if status:
-            self.status_var.set(status)
-        if busy:
-            self.progress.start(10)
-        else:
-            self.progress.stop()
+            self.log(f"[STATUS] {status}")
         state = tk.DISABLED if busy else tk.NORMAL
         for btn in self.buttons_to_lock:
             btn.config(state=state)
@@ -1811,22 +1446,17 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
                 self.root.after(0, lambda: self.set_busy(False, "Pronto."))
         threading.Thread(target=wrapper, daemon=True).start()
 
-    # --------------------------------------------------------
-    # Acoes da interface
-    # --------------------------------------------------------
     def select_zip(self):
         path = filedialog.askopenfilename(title="Selecione o LCC.zip", filetypes=[("ZIP", "*.zip"), ("Todos", "*.*")])
         if path:
             self.source_path.set(path)
-            self.status_var.set("ZIP selecionado. Agora clique em Preparar dataset e segmentar tudo.")
-            self.next_step_var.set("Proximo passo: preparar o dataset. O ZIP sera extraido e as imagens serao organizadas.")
+            self.log("[INFO] ZIP selecionado. Agora clique em Preparar dataset e segmentar tudo.")
 
     def select_folder(self):
         path = filedialog.askdirectory(title="Selecione a pasta LCC já extraída")
         if path:
             self.source_path.set(path)
-            self.status_var.set("Pasta LCC selecionada. Agora clique em Preparar dataset e segmentar.")
-            self.next_step_var.set("Próximo passo: preparar o dataset processado a partir da pasta LCC.")
+            self.log("[INFO] Pasta LCC selecionada. Agora clique em Preparar dataset e segmentar.")
 
     def run_prepare_dataset(self):
         def task():
@@ -1836,14 +1466,12 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
             self.log("O programa vai organizar treino/teste, gerar imagens originais normalizadas, segmentadas e máscaras.")
             prepare_dataset_lcc(Path(self.source_path.get()), log=self.log, seg_method=self.seg_method.get())
             self.root.after(0, self.update_dataset_status)
-            self.root.after(0, lambda: self.next_step_var.set("Proximo passo: testar a segmentacao em uma imagem antes de treinar."))
         self.run_threaded(task, busy_status="Preparando dataset e segmentando imagens...")
 
     def run_train(self):
         def task():
             self.log("\n=== TREINAMENTO ===")
             self.log(f"Rede: {self.model_name.get()} | Tarefa: {self.task.get()} | Entrada: {self.input_kind.get()}")
-            self.root.after(0, self.set_explanation_for_training)
             metrics = train_selected_model(
                 model_name=self.model_name.get(),
                 task=self.task.get(),
@@ -1854,7 +1482,6 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
                 log=self.log,
             )
             self.root.after(0, lambda: self.update_results_tab(metrics))
-            self.root.after(0, lambda: self.next_step_var.set("Proximo passo: avaliar o modelo salvo ou gerar Grad-CAM em uma imagem de teste."))
         self.run_threaded(task, busy_status="Treinando modelo. Isso pode demorar...")
 
     def run_evaluate(self):
@@ -1862,7 +1489,6 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
             self.log("\n=== AVALIACAO DO MODELO SALVO ===")
             metrics = evaluate_saved_model(self.model_name.get(), self.task.get(), self.input_kind.get(), log=self.log)
             self.root.after(0, lambda: self.update_results_tab(metrics))
-            self.root.after(0, lambda: self.next_step_var.set("Proximo passo: usar Grad-CAM para explicar uma predicao individual."))
         self.run_threaded(task, busy_status="Avaliando modelo salvo...")
 
     def run_gradcam(self):
@@ -1875,14 +1501,12 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
 
         def task():
             self.log("\n=== CLASSIFICACAO INDIVIDUAL + GRAD-CAM ===")
-            self.root.after(0, self.set_explanation_for_gradcam)
             pred, conf, used_img, overlay, out_path = classify_image_with_gradcam(
                 Path(path), self.model_name.get(), self.task.get(), self.input_kind.get(), log=self.log, seg_method=self.seg_method.get()
             )
             self.root.after(0, lambda: self.image_left.set_image(used_img, "Imagem usada pela rede"))
             self.root.after(0, lambda: self.image_right.set_image(overlay, "Grad-CAM"))
             self.root.after(0, lambda: messagebox.showinfo("Resultado", f"Predicao: {pred}\nConfianca: {conf:.4f}"))
-            self.root.after(0, lambda: self.next_step_var.set("Use essa imagem no relatorio para discutir a explicabilidade da rede."))
         self.run_threaded(task, busy_status="Gerando Grad-CAM...")
 
     def run_preview_segmentation(self):
@@ -1901,9 +1525,6 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
         self.image_right.set_image(overlay, "Mascara sobreposta em verde")
         self.log(f"[OK] Segmentacao testada em: {path}")
         self.log("[INFO] Direita: verde = area mantida pela mascara. Preto/fundo = removido.")
-        self.status_var.set("Segmentacao visualizada.")
-        self.next_step_var.set("Se a mascara estiver boa, treine primeiro ResNet18 + binary + segmentado com 2 epocas.")
-        self.set_explanation_for_segmentation()
 
     def run_compare_original_segmented(self):
         path = filedialog.askopenfilename(
@@ -1917,9 +1538,6 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
         self.image_left.set_image(gray, "Original normalizada")
         self.image_right.set_image(segmented, "Imagem segmentada")
         self.log(f"[OK] Comparacao original x segmentada: {path}")
-        self.status_var.set("Comparacao carregada.")
-        self.next_step_var.set("Use o zoom para verificar se anotacoes e fundo foram removidos.")
-        self.set_explanation_for_segmentation()
 
     def open_results_folder(self):
         RESULTS_DIR.mkdir(exist_ok=True)
@@ -1929,7 +1547,6 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
             messagebox.showerror("Erro", f"Nao consegui abrir a pasta de resultados: {e}")
 
     def auto_detect_resources(self):
-        """Detecta automaticamente a pasta LCC e modelos já treinados na pasta do projeto."""
         candidates = [Path("LCC"), Path("lcc")]
         if not self.source_path.get():
             for candidate in candidates:
@@ -1943,12 +1560,10 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
             self.log("[OK] Modelos treinados encontrados localmente:")
             for p in existing_models:
                 self.log(f"     - {p}")
-            self.next_step_var.set("Modelos ja treinados encontrados. Voce pode avaliar ou usar a Demonstração automática.")
         elif (PROCESSED_DIR / "manifest_lcc.csv").exists():
-            self.next_step_var.set("Dataset processado encontrado. Proximo passo: treinar ou avaliar se houver modelo salvo.")
+            self.log("[INFO] Dataset processado encontrado.")
 
     def find_demo_image(self):
-        """Escolhe automaticamente uma imagem de teste para a demonstracao."""
         base = PROCESSED_DIR / self.input_kind.get() / "test"
         if not base.exists():
             return None
@@ -1968,12 +1583,11 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
         return images[0] if images else None
 
     def run_auto_demo(self):
-        """Executa um fluxo pronto para apresentacao: melhor modelo binario + avaliacao + Grad-CAM."""
         self.model_name.set("efficientnet_b0")
         self.task.set("binary")
         self.input_kind.set("segmentado")
 
-        model_path = model_file_path(self.model_name.get(), self.task.get(), self.input_kind.get())
+        model_path = model_file_name(self.model_name.get(), self.task.get(), self.input_kind.get())
         if not model_path.exists():
             messagebox.showwarning(
                 "Modelo nao encontrado",
@@ -2006,7 +1620,6 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
             self.root.after(0, lambda: self.image_left.set_image(used_img, "Imagem usada pela rede"))
             self.root.after(0, lambda: self.image_right.set_image(overlay, "Grad-CAM"))
             self.root.after(0, lambda: self.update_results_tab(metrics))
-            self.root.after(0, lambda: self.next_step_var.set("Demonstracao concluida. Use a tela e o Grad-CAM para explicar o modelo."))
             self.root.after(0, lambda: messagebox.showinfo("Demonstracao concluida", f"Predicao: {pred}\nConfianca: {conf:.4f}\nGrad-CAM salvo em:\n{out_path}"))
 
         self.run_threaded(task, busy_status="Executando demonstracao automatica...")
@@ -2032,8 +1645,7 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
         content += "- Especificidade mede quanto o modelo evita falsos positivos.\n"
         content += "- F1-score equilibra precisao e sensibilidade.\n"
         content += "- A matriz de confusao mostra onde o modelo esta confundindo as classes.\n"
-        self.set_text(self.results_text, content)
-        self.notebook.select(3)
+        self.log(content)
 
     def update_dataset_status(self):
         manifest_path = PROCESSED_DIR / "manifest_lcc.csv"
@@ -2063,11 +1675,9 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
 
         content = "\n".join(lines)
         self.dataset_summary_var.set(content)
-        self.set_text(self.dataset_text, content + "\n\nPastas criadas:\n- original/train\n- original/test\n- segmentado/train\n- segmentado/test\n- mascaras/train\n- mascaras/test\n")
 
     def show_dataset_summary(self):
         self.update_dataset_status()
-        self.notebook.select(1)
         messagebox.showinfo("Resumo do dataset", self.dataset_summary_var.get())
 
     def open_processed_folder(self):

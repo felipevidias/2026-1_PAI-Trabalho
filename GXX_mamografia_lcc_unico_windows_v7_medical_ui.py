@@ -190,26 +190,11 @@ def read_image_as_uint8_gray(path: Path) -> np.ndarray:
     return arr.astype(np.uint8)
 
 
-def segment_breast_region(gray: np.ndarray):
-    """
-    Segmentacao automatica simples e robusta:
-    1. suavizacao;
-    2. limiarizacao de Otsu;
-    3. morfologia;
-    4. maior componente conexo como regiao da mama;
-    5. fundo/anotacoes fora da maior regiao viram preto.
-
-    Retorna: imagem_segmentada, mascara_binaria.
-    """
-    if gray.ndim != 2:
-        raise ValueError("A funcao segment_breast_region espera imagem em escala de cinza.")
-
+def segment_otsu(gray: np.ndarray):
+    """Segmentação padrão usando Otsu e Componentes Conexos."""
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    # Otsu: separa fundo escuro da regiao da mama.
     _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Garante que a area branca nao seja absurda. Se ficou invertido, inverte.
     white_ratio = np.mean(th > 0)
     if white_ratio > 0.85:
         th = cv2.bitwise_not(th)
@@ -226,19 +211,138 @@ def segment_breast_region(gray: np.ndarray):
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
 
     if num_labels <= 1:
-        # fallback: tudo que nao for fundo quase preto
         mask = (gray > 5).astype(np.uint8) * 255
     else:
-        # Seleciona maior componente, ignorando fundo.
         areas = stats[1:, cv2.CC_STAT_AREA]
         largest_label = 1 + int(np.argmax(areas))
         mask = (labels == largest_label).astype(np.uint8) * 255
 
-    # Fecha pequenos buracos dentro da mama.
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-
     segmented = cv2.bitwise_and(gray, gray, mask=mask)
     return segmented, mask
+
+
+def segment_region_growing(gray: np.ndarray):
+    """Segmentação baseada em Crescimento de Regiões usando Flood Fill."""
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, th = cv2.threshold(blur, 15, 255, cv2.THRESH_BINARY)
+    M = cv2.moments(th)
+    
+    if M["m00"] == 0:
+        return gray, th
+        
+    cX = int(M["m10"] / M["m00"])
+    cY = int(M["m01"] / M["m00"])
+    
+    h, w = gray.shape
+    flood_mask = np.zeros((h + 2, w + 2), np.uint8)
+    
+    cv2.floodFill(blur, flood_mask, (cX, cY), 255, loDiff=5, upDiff=5)
+    
+    mask = flood_mask[1:-1, 1:-1]
+    mask = (mask > 0).astype(np.uint8) * 255
+    
+    k_size = max(5, int(min(h, w) * 0.015))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    
+    segmented = cv2.bitwise_and(gray, gray, mask=mask)
+    return segmented, mask
+
+
+def segment_graph_cut(gray: np.ndarray):
+    """Segmentação automática usando GrabCut (Graph Cuts) com Fallback Seguro."""
+    img_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    H, W = gray.shape
+
+    # 1. Acha a caixa (Bounding Box) da mama de forma inteligente
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # Pega apenas o maior objeto para evitar que a caixa fique numa letra no canto da imagem
+    contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        c = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(c)
+    else:
+        x, y, w, h = 10, 10, W-20, H-20
+
+    # 2. Trava de Segurança Crítica para o GrabCut!
+    # Garante que a caixa nunca encoste na borda da imagem (sempre sobra fundo fora dela)
+    x = max(2, x - 5)
+    y = max(2, y - 5)
+    w = min(W - x - 2, w + 10)
+    h = min(H - y - 2, h + 10)
+
+    # Se a caixa ficar bizarramente pequena, força um tamanho seguro
+    if w < 20 or h < 20:
+         x, y, w, h = 2, 2, W - 4, H - 4
+
+    rect = (x, y, w, h)
+
+    bgdModel = np.zeros((1, 65), np.float64)
+    fgdModel = np.zeros((1, 65), np.float64)
+    mask = np.zeros(gray.shape, np.uint8)
+
+    # 3. Executa o Grafo. Se a imagem estiver muito ruim e quebrar a matemática, 
+    # o 'except' intercepta a queda e usa o Otsu como salva-vidas para não crashar o Dataset.
+    try:
+        cv2.grabCut(img_bgr, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
+    except cv2.error:
+        return segment_otsu(gray)
+
+    mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
+    final_mask = mask2 * 255
+
+    k_size = max(5, int(min(H, W) * 0.015))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
+    final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    segmented = cv2.bitwise_and(gray, gray, mask=final_mask)
+    return segmented, final_mask
+
+
+def segment_morphological_reconstruction(gray: np.ndarray):
+    """Segmentação por Filtro Conexo simulando Max-Tree (Abertura por Reconstrução)."""
+    k_size = 25
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
+    marker = cv2.erode(gray, kernel)
+
+    mask_img = gray.copy()
+    reconstructed = marker.copy()
+    recon_kernel = np.ones((3, 3), np.uint8)
+
+    while True:
+        dilated = cv2.dilate(reconstructed, recon_kernel)
+        proposed = cv2.min(dilated, mask_img)
+        if np.array_equal(reconstructed, proposed):
+            break
+        reconstructed = proposed
+
+    _, th = cv2.threshold(reconstructed, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    num_labels, comp_labels, stats, _ = cv2.connectedComponentsWithStats(th, connectivity=8)
+    if num_labels > 1:
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        largest_label = 1 + int(np.argmax(areas))
+        final_mask = (comp_labels == largest_label).astype(np.uint8) * 255
+    else:
+        final_mask = th
+
+    segmented = cv2.bitwise_and(gray, gray, mask=final_mask)
+    return segmented, final_mask
+
+
+def segment_breast_region(gray: np.ndarray, method="Otsu (Padrão)"):
+    """Roteador para os métodos de segmentação."""
+    if method == "Region Growing":
+        return segment_region_growing(gray)
+    elif method == "Graph Cuts (GrabCut)":
+        return segment_graph_cut(gray)
+    elif method == "Filtro Conexo (Max-Tree)":
+        return segment_morphological_reconstruction(gray)
+    else:
+        return segment_otsu(gray)
 
 
 def save_gray_png(arr: np.ndarray, path: Path):
@@ -306,7 +410,7 @@ def extract_lcc_source(source_path: Path, log=print) -> Path:
     return rar_out
 
 
-def prepare_dataset_lcc(source_path: Path, log=print):
+def prepare_dataset_lcc(source_path: Path, log=print, seg_method="Otsu (Padrão)"):
     """
     Cria duas versoes locais:
     - dataset_lcc_processado/original/train|test/...
@@ -347,7 +451,7 @@ def prepare_dataset_lcc(source_path: Path, log=print):
         class_folder = CLASS_MAP[cls]["folder"]
 
         gray = read_image_as_uint8_gray(img_path)
-        segmented, mask = segment_breast_region(gray)
+        segmented, mask = segment_breast_region(gray, method=seg_method)
 
         base_name = f"{cls}_{img_num:04d}_{safe_stem(img_path)}.png"
         original_out = PROCESSED_DIR / "original" / split / class_folder / base_name
@@ -743,7 +847,7 @@ def get_target_layer(model, model_name):
     raise ValueError("Camada alvo Grad-CAM nao definida para este modelo.")
 
 
-def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, log=print):
+def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, log=print, seg_method="Otsu (Padrão)"):
     """
     Classifica uma imagem individual e gera Grad-CAM.
 
@@ -760,7 +864,7 @@ def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, 
     model.eval()
 
     gray = read_image_as_uint8_gray(image_path)
-    segmented, mask = segment_breast_region(gray)
+    segmented, mask = segment_breast_region(gray, method=seg_method)
     used_img = segmented if input_kind == "segmentado" else gray
 
     x = preprocess_single_image(used_img, image_size=checkpoint.get("image_size", 224)).to(device)
@@ -1211,6 +1315,7 @@ class MammoApp:
         self.model_name = tk.StringVar(value="efficientnet_b0")
         self.task = tk.StringVar(value="4classes")
         self.input_kind = tk.StringVar(value="segmentado")
+        self.seg_method = tk.StringVar(value="Otsu (Padrão)")
         self.epochs = tk.IntVar(value=DEFAULT_EPOCHS)
         self.batch_size = tk.IntVar(value=DEFAULT_BATCH_SIZE)
         self.lr = tk.DoubleVar(value=DEFAULT_LR)
@@ -1272,15 +1377,6 @@ class MammoApp:
         return btn
 
     def build_left_controls(self):
-        title = ttk.Label(self.left, text="Painel clínico", font=("Segoe UI", 15, "bold"), foreground=UI["primary_dark"])
-        title.pack(anchor="w", pady=(0, 4))
-        ttk.Label(
-            self.left,
-            text="Fluxo guiado: dados → experimento → treinamento → avaliação/Grad-CAM. Use as abas para não se perder.",
-            foreground=UI["muted"],
-            wraplength=350,
-        ).pack(anchor="w", pady=(0, 10))
-
         self.control_tabs = ttk.Notebook(self.left)
         self.control_tabs.pack(fill=tk.BOTH, expand=True)
 
@@ -1297,6 +1393,7 @@ class MammoApp:
         # Aba 1 - dados
         ds_frame = ttk.LabelFrame(tab_data, text="Dataset LCC já extraído")
         ds_frame.pack(fill=tk.X, pady=6)
+        
         ttk.Label(
             ds_frame,
             text="Selecione a pasta LCC que contém as subpastas D + left + CC, E + left + CC, F + left + CC e G + left + CC.",
@@ -1304,8 +1401,19 @@ class MammoApp:
             wraplength=330,
             justify=tk.LEFT,
         ).pack(anchor="w", padx=6, pady=(6, 4))
+        
         ttk.Label(ds_frame, text="Pasta selecionada:", style="Card.TLabel").pack(anchor="w", padx=6, pady=(6, 0))
         ttk.Entry(ds_frame, textvariable=self.source_path, width=48).pack(fill=tk.X, padx=6, pady=5)
+
+        # === MENU DE SEGMENTAÇÃO ADICIONADO AQUI, DEPOIS DA PASTA ===
+        ttk.Label(ds_frame, text="Método de Segmentação:", style="Card.TLabel").pack(anchor="w", padx=6, pady=(6, 0))
+        ttk.Combobox(
+            ds_frame,
+            textvariable=self.seg_method,
+            values=["Otsu (Padrão)", "Region Growing", "Graph Cuts (GrabCut)", "Filtro Conexo (Max-Tree)"],
+            state="readonly"
+        ).pack(fill=tk.X, padx=6, pady=3)
+
         self.add_button(ds_frame, "Selecionar pasta LCC", self.select_folder, style="Primary.TButton")
         self.add_button(ds_frame, "Preparar dataset e segmentar", self.run_prepare_dataset, pady=8, style="Success.TButton")
         self.add_button(ds_frame, "Ver resumo do dataset", self.show_dataset_summary, pady=2)
@@ -1726,7 +1834,7 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
                 raise RuntimeError("Selecione a pasta LCC já extraída primeiro.")
             self.log("\n=== PREPARACAO DO DATASET ===")
             self.log("O programa vai organizar treino/teste, gerar imagens originais normalizadas, segmentadas e máscaras.")
-            prepare_dataset_lcc(Path(self.source_path.get()), log=self.log)
+            prepare_dataset_lcc(Path(self.source_path.get()), log=self.log, seg_method=self.seg_method.get())
             self.root.after(0, self.update_dataset_status)
             self.root.after(0, lambda: self.next_step_var.set("Proximo passo: testar a segmentacao em uma imagem antes de treinar."))
         self.run_threaded(task, busy_status="Preparando dataset e segmentando imagens...")
@@ -1769,7 +1877,7 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
             self.log("\n=== CLASSIFICACAO INDIVIDUAL + GRAD-CAM ===")
             self.root.after(0, self.set_explanation_for_gradcam)
             pred, conf, used_img, overlay, out_path = classify_image_with_gradcam(
-                Path(path), self.model_name.get(), self.task.get(), self.input_kind.get(), log=self.log
+                Path(path), self.model_name.get(), self.task.get(), self.input_kind.get(), log=self.log, seg_method=self.seg_method.get()
             )
             self.root.after(0, lambda: self.image_left.set_image(used_img, "Imagem usada pela rede"))
             self.root.after(0, lambda: self.image_right.set_image(overlay, "Grad-CAM"))
@@ -1786,7 +1894,7 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
             return
 
         gray = read_image_as_uint8_gray(Path(path))
-        segmented, mask = segment_breast_region(gray)
+        segmented, mask = segment_breast_region(gray, method=self.seg_method.get())
         overlay = self.make_mask_overlay(gray, mask)
 
         self.image_left.set_image(gray, "Original normalizada")
@@ -1805,7 +1913,7 @@ No relatorio, use o Grad-CAM para discutir se a rede parece olhar para a regiao 
         if not path:
             return
         gray = read_image_as_uint8_gray(Path(path))
-        segmented, mask = segment_breast_region(gray)
+        segmented, mask = segment_breast_region(gray, method=self.seg_method.get())
         self.image_left.set_image(gray, "Original normalizada")
         self.image_right.set_image(segmented, "Imagem segmentada")
         self.log(f"[OK] Comparacao original x segmentada: {path}")

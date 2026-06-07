@@ -188,33 +188,33 @@ def segment_region_growing(gray: np.ndarray):
     return segmented, mask
 
 def segment_morphological_reconstruction(gray: np.ndarray):
-    k_size = 25
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
-    marker = cv2.erode(gray, kernel)
-    mask_img = gray.copy()
-    reconstructed = marker.copy()
-    recon_kernel = np.ones((3, 3), np.uint8)
-    while True:
-        dilated = cv2.dilate(reconstructed, recon_kernel)
-        proposed = cv2.min(dilated, mask_img)
-        if np.array_equal(reconstructed, proposed):
-            break
-        reconstructed = proposed
-    _, th = cv2.threshold(reconstructed, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    num_labels, comp_labels, stats, _ = cv2.connectedComponentsWithStats(th, connectivity=8)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    if np.mean(th == 255) > 0.85:
+        th = cv2.bitwise_not(th)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (35, 35))
+    th_opened = cv2.morphologyEx(th, cv2.MORPH_OPEN, kernel)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(th_opened, connectivity=8)
+
     if num_labels > 1:
         areas = stats[1:, cv2.CC_STAT_AREA]
         largest_label = 1 + int(np.argmax(areas))
-        final_mask = (comp_labels == largest_label).astype(np.uint8) * 255
+        final_mask = (labels == largest_label).astype(np.uint8) * 255
     else:
-        final_mask = th
+        final_mask = th_opened
+
+    final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel)
+
     segmented = cv2.bitwise_and(gray, gray, mask=final_mask)
     return segmented, final_mask
 
 def segment_breast_region(gray: np.ndarray, method="Otsu (Padrão)"):
     if method == "Region Growing":
         return segment_region_growing(gray)
-    elif method == "Filtro Conexo (Max-Tree)":
+    elif method == "Filtro Conexo (Attribute Filtering)":
         return segment_morphological_reconstruction(gray)
     else:
         return segment_otsu(gray)
@@ -394,8 +394,8 @@ def train_selected_model(model_name, task, input_kind, epochs=5, batch_size=8, l
 
     train_ds = MammographyDataset(train_root, task=task, train=True, image_size=DEFAULT_IMAGE_SIZE)
     test_ds = MammographyDataset(test_root, task=task, train=False, image_size=DEFAULT_IMAGE_SIZE)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=4)
 
     model, _ = build_model(model_name, num_classes=num_classes, pretrained=True)
     model = model.to(device)
@@ -707,7 +707,7 @@ class MammoApp:
         ds = ttk.LabelFrame(tab_data, text="Dataset LCC")
         ds.pack(fill=tk.X, pady=6)
         ttk.Entry(ds, textvariable=self.source_path).pack(fill=tk.X, padx=6, pady=5)
-        ttk.Combobox(ds, textvariable=self.seg_method, values=["Otsu (Padrão)", "Region Growing", "Filtro Conexo (Max-Tree)"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
+        ttk.Combobox(ds, textvariable=self.seg_method, values=["Otsu (Padrão)", "Region Growing", "Filtro Conexo (Attribute Filtering)"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
         self.add_button(ds, "Testar método em UMA imagem", self.run_preview_seg, style="Warning.TButton")
         self.add_button(ds, "Preparar dataset e segmentar", self.run_prep, style="Success.TButton", pady=8)
 
@@ -741,7 +741,7 @@ class MammoApp:
         ttk.Combobox(test_cfg, textvariable=self.model_name, values=["efficientnet_b0", "resnet18"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
         ttk.Combobox(test_cfg, textvariable=self.task, values=["binary", "4classes"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
         ttk.Combobox(test_cfg, textvariable=self.input_kind, values=["original", "segmentado"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
-        ttk.Combobox(test_cfg, textvariable=self.seg_method, values=["Otsu (Padrão)", "Region Growing", "Filtro Conexo (Max-Tree)"], state="readonly").pack(fill=tk.X, padx=6, pady=6)
+        ttk.Combobox(test_cfg, textvariable=self.seg_method, values=["Otsu (Padrão)", "Region Growing", "Filtro Conexo (Attribute Filtering)"], state="readonly").pack(fill=tk.X, padx=6, pady=6)
 
         tt = ttk.LabelFrame(tab_test, text="Testes e Relatórios")
         tt.pack(fill=tk.X, pady=6)

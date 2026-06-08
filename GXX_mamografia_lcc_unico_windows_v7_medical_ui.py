@@ -5,7 +5,7 @@ GXX_mamografia_lcc_unico_windows_v7_medical_ui.py
 Script unico para o trabalho de Segmentacao e Classificacao de Imagens Mamograficas
 Dataset utilizado: LCC
 Redes utilizadas: EfficientNet + ResNet
- Segmentações utilizadas: Otsu, Region Growing, Filtro Conexo (Attribute Filtering)
+ Segmentações utilizadas: Otsu, Filtro Conexo (Attribute Filtering)
 
 """
 
@@ -176,25 +176,6 @@ def segment_otsu(gray: np.ndarray):
     segmented = cv2.bitwise_and(gray, gray, mask=mask)
     return segmented, mask
 
-def segment_region_growing(gray: np.ndarray):
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, th = cv2.threshold(blur, 15, 255, cv2.THRESH_BINARY)
-    M = cv2.moments(th)
-    if M["m00"] == 0:
-        return gray, th
-    cX = int(M["m10"] / M["m00"])
-    cY = int(M["m01"] / M["m00"])
-    h, w = gray.shape
-    flood_mask = np.zeros((h + 2, w + 2), np.uint8)
-    cv2.floodFill(blur, flood_mask, (cX, cY), 255, loDiff=5, upDiff=5)
-    mask = flood_mask[1:-1, 1:-1]
-    mask = (mask > 0).astype(np.uint8) * 255
-    k_size = max(5, int(min(h, w) * 0.015))
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    segmented = cv2.bitwise_and(gray, gray, mask=mask)
-    return segmented, mask
-
 def segment_morphological_reconstruction(gray: np.ndarray):
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -220,9 +201,7 @@ def segment_morphological_reconstruction(gray: np.ndarray):
     return segmented, final_mask
 
 def segment_breast_region(gray: np.ndarray, method="Otsu (Padrão)"):
-    if method == "Region Growing":
-        return segment_region_growing(gray)
-    elif method == "Filtro Conexo (Attribute Filtering)":
+    if method == "Filtro Conexo (Attribute Filtering)":
         return segment_morphological_reconstruction(gray)
     else:
         return segment_otsu(gray)
@@ -365,7 +344,6 @@ class MammographyDataset(Dataset):
             img = img.rotate(angle, resample=Image.BILINEAR, fillcolor=(0, 0, 0))
         return self.tf(img), torch.tensor(label, dtype=torch.long), str(path)
 
-
 def build_model(model_name="efficientnet_b0", num_classes=4, pretrained=True):
     model_name = model_name.lower()
     if model_name == "efficientnet_b0":
@@ -435,7 +413,6 @@ def train_selected_model(model_name, task, input_kind, epochs=5, batch_size=8, l
             running_loss += loss.item() * x.size(0)
             correct += (out.argmax(dim=1) == y).sum().item()
             total += y.size(0)
-        
         metrics = evaluate_in_memory(model, test_loader, num_classes, device)
         history.append({
             "epoch": epoch, "train_loss": running_loss/max(total,1),
@@ -456,6 +433,7 @@ def train_selected_model(model_name, task, input_kind, epochs=5, batch_size=8, l
         writer = csv.DictWriter(f, fieldnames=list(history[0].keys()))
         writer.writeheader()
         writer.writerows(history)
+
 
     log(f"\n[OK] Modelo e historico salvos! Tempo: {elapsed:.2f}s")
     return evaluate_saved_model(model_name, task, input_kind, log=log, seg_method=seg_method)
@@ -497,6 +475,7 @@ def load_checkpoint_model(model_name, task, input_kind, seg_method=""):
     checkpoint = torch.load(ckpt_path, map_location="cpu")
     model, _ = build_model(checkpoint["model_name"], checkpoint["num_classes"], pretrained=False)
     model.load_state_dict(checkpoint["state_dict"])
+
     return model, checkpoint
 
 def evaluate_saved_model(model_name, task, input_kind, log=print, seg_method=""):
@@ -506,7 +485,6 @@ def evaluate_saved_model(model_name, task, input_kind, log=print, seg_method="")
     test_ds = MammographyDataset(PROCESSED_DIR / input_kind / "test", task=task, train=False, image_size=checkpoint.get("image_size", 224))
     test_loader = DataLoader(test_ds, batch_size=DEFAULT_BATCH_SIZE, shuffle=False)
     metrics = evaluate_in_memory(model, test_loader, checkpoint["num_classes"], device)
-    
     names = LABEL_NAMES_4 if checkpoint["num_classes"] == 4 else LABEL_NAMES_BIN
     suffix = f"_{safe_stem(Path(seg_method))}" if input_kind == "segmentado" and seg_method else ""
     result_path = RESULTS_DIR / f"metricas_{model_name}_{task}_{input_kind}{suffix}.txt"
@@ -560,6 +538,7 @@ def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, 
         saved["activation"] = o
         if hasattr(o, "retain_grad"): o.retain_grad()
     handle = target_layer.register_forward_hook(forward_hook)
+
 
     try:
         out = model(x)
@@ -726,7 +705,7 @@ class MammoApp:
         ds = ttk.LabelFrame(tab_data, text="Dataset LCC")
         ds.pack(fill=tk.X, pady=6)
         ttk.Entry(ds, textvariable=self.source_path).pack(fill=tk.X, padx=6, pady=5)
-        ttk.Combobox(ds, textvariable=self.seg_method, values=["Otsu (Padrão)", "Region Growing", "Filtro Conexo (Attribute Filtering)"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
+        ttk.Combobox(ds, textvariable=self.seg_method, values=["Otsu (Padrão)", "Filtro Conexo (Attribute Filtering)"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
         self.add_button(ds, "Testar método em UMA imagem", self.run_preview_seg, style="Warning.TButton")
         self.add_button(ds, "Preparar dataset e segmentar", self.run_prep, style="Success.TButton", pady=8)
 
@@ -760,7 +739,7 @@ class MammoApp:
         ttk.Combobox(test_cfg, textvariable=self.model_name, values=["efficientnet_b0", "resnet18"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
         ttk.Combobox(test_cfg, textvariable=self.task, values=["binary", "4classes"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
         ttk.Combobox(test_cfg, textvariable=self.input_kind, values=["original", "segmentado"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
-        ttk.Combobox(test_cfg, textvariable=self.seg_method, values=["Otsu (Padrão)", "Region Growing", "Filtro Conexo (Attribute Filtering)"], state="readonly").pack(fill=tk.X, padx=6, pady=6)
+        ttk.Combobox(test_cfg, textvariable=self.seg_method, values=["Otsu (Padrão)", "Filtro Conexo (Attribute Filtering)"], state="readonly").pack(fill=tk.X, padx=6, pady=6)
 
         tt = ttk.LabelFrame(tab_test, text="Testes e Relatórios")
         tt.pack(fill=tk.X, pady=6)

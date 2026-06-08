@@ -2,9 +2,11 @@
 """
 GXX_mamografia_lcc_unico_windows_v7_medical_ui.py
 
-Script unico para o trabalho de Segmentacao e Classificacao de Imagens Mamograficas.
-Dataset do grupo: LCC
-Redes do grupo: EfficientNet + ResNet
+Script unico para o trabalho de Segmentacao e Classificacao de Imagens Mamograficas
+Dataset utilizado: LCC
+Redes utilizadas: EfficientNet + ResNet
+ Segmentações utilizadas: Otsu, Region Growing, Filtro Conexo (Attribute Filtering)
+
 """
 
 import os
@@ -33,10 +35,11 @@ try:
 except ImportError as e:
     THIRD_PARTY_IMPORT_ERROR = e
 
-
-# ============================================================
-# 1. CONFIGURACOES GERAIS
-# ============================================================
+"""
+-----------------------------------------------------
+- Configurações gerais e declaração de constantes
+------------------------------------------------------
+"""
 
 APP_TITLE = "MammoClass AI - LCC | Interface Médica | EfficientNet + ResNet | V7"
 PROCESSED_DIR = Path("dataset_lcc_processado")
@@ -63,9 +66,13 @@ DEFAULT_BATCH_SIZE = 8
 DEFAULT_LR = 1e-3
 
 
-# ============================================================
-# 2. UTILITARIOS DE LOG E ARQUIVOS
-# ============================================================
+
+
+"""
+-----------------------------------------------------
+- Utilitários e arquivos de log
+------------------------------------------------------
+"""
 
 def ensure_dirs():
     MODELS_DIR.mkdir(exist_ok=True)
@@ -120,10 +127,11 @@ def check_dependencies_or_show_help():
     return False
 
 
-# ============================================================
-# 3. LEITURA, NORMALIZACAO E SEGMENTACAO DA MAMA
-# ============================================================
-
+"""
+---------------------------------------------------------
+- Leitura, normalização e segmentação da mama
+---------------------------------------------------------
+"""
 def read_image_as_uint8_gray(path: Path) -> np.ndarray:
     img = Image.open(path)
     arr = np.array(img)
@@ -224,9 +232,11 @@ def save_gray_png(arr: np.ndarray, path: Path):
     Image.fromarray(arr.astype(np.uint8)).save(path)
 
 
-# ============================================================
-# 4. PREPARACAO DO DATASET
-# ============================================================
+"""
+---------------------------
+- Preparação do dataset
+---------------------------
+"""
 
 def extract_lcc_source(source_path: Path, log=print) -> Path:
     source_path = Path(source_path)
@@ -310,12 +320,16 @@ def prepare_dataset_lcc(source_path: Path, log=print, seg_method="Otsu (Padrão)
     log("\n[OK] Dataset preparado.")
     return manifest
 
+"""
+----------------------------------
+- Dataset pytorch e redes neurais
+----------------------------------
+"""
 
-# ============================================================
-# 5. DATASET PYTORCH E REDES NEURAIS
-# ============================================================
+
 
 class MammographyDataset(Dataset):
+
     def __init__(self, root_dir: Path, task="4classes", train=True, image_size=224):
         self.root_dir = Path(root_dir)
         self.task = task
@@ -333,8 +347,10 @@ class MammographyDataset(Dataset):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
+
     def __len__(self):
         return len(self.samples) * len(AUGMENT_ANGLES) if self.train else len(self.samples)
+    
 
     def __getitem__(self, idx):
         if self.train:
@@ -348,6 +364,7 @@ class MammographyDataset(Dataset):
         if self.train:
             img = img.rotate(angle, resample=Image.BILINEAR, fillcolor=(0, 0, 0))
         return self.tf(img), torch.tensor(label, dtype=torch.long), str(path)
+
 
 def build_model(model_name="efficientnet_b0", num_classes=4, pretrained=True):
     model_name = model_name.lower()
@@ -380,9 +397,11 @@ def model_file_name(model_name, task, input_kind, seg_method=""):
     return MODELS_DIR / f"{model_name}_{task}_{input_kind}{suffix}.pt"
 
 
-# ============================================================
-# 6. TREINAMENTO, AVALIACAO E GRAD-CAM
-# ============================================================
+"""
+------------------------------------
+- Treinamento, avaliação e GRAD-CAM
+------------------------------------
+"""
 
 def train_selected_model(model_name, task, input_kind, epochs=5, batch_size=8, lr=1e-3, log=print, seg_method=""):
     ensure_dirs()
@@ -493,9 +512,9 @@ def evaluate_saved_model(model_name, task, input_kind, log=print, seg_method="")
     result_path = RESULTS_DIR / f"metricas_{model_name}_{task}_{input_kind}{suffix}.txt"
     
     relatorio_txt = [
-        "========================================",
-        "RELATORIO DE AVALIACAO - MODELO TREINADO",
-        "========================================",
+        "-----------------------------------------",
+        "Relatorio da avaliação do modelo treinado",
+        "-----------------------------------------",
         f"Rede Neural: {model_name}",
         f"Tarefa: {task}",
         f"Entrada: {input_kind}",
@@ -510,7 +529,7 @@ def evaluate_saved_model(model_name, task, input_kind, log=print, seg_method="")
         "Matriz de Confusão:",
         f"Classes: {' | '.join(names)}",
         str(metrics["confusion_matrix"]),
-        "========================================"
+        "----------------------------------------"
     ]
     
     texto_final = "\n".join(relatorio_txt)
@@ -566,10 +585,11 @@ def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, 
     finally:
         handle.remove()
 
-
-# ============================================================
-# 7. INTERFACE GRAFICA TKINTER
-# ============================================================
+"""
+------------------------------------
+- Interface gráfica com Tkinter
+------------------------------------
+"""
 
 UI = {"bg": "#EEF6F8", "card": "#FFFFFF", "text": "#12313A", "muted": "#5D7680", "primary": "#0F7C90", "primary_dark": "#0B5F6E", "success": "#138A5B", "warning": "#E28A10", "danger": "#C24141", "border": "#C9DDE3", "canvas": "#0B1F27"}
 
@@ -646,7 +666,6 @@ class ImagePanel(ttk.LabelFrame):
         self.fit_to_panel = True
         self.render(center=True)
 
-
 class MammoApp:
     def __init__(self, root):
         self.root = root
@@ -711,7 +730,7 @@ class MammoApp:
         self.add_button(ds, "Testar método em UMA imagem", self.run_preview_seg, style="Warning.TButton")
         self.add_button(ds, "Preparar dataset e segmentar", self.run_prep, style="Success.TButton", pady=8)
 
-        # Aba 2 - IA (AGORA COM OS HIPERPARÂMETROS DE VOLTA!)
+        # Aba 2 - IA 
         ai = ttk.LabelFrame(tab_ai, text="Configuração da Rede")
         ai.pack(fill=tk.X, pady=6)
         ttk.Combobox(ai, textvariable=self.model_name, values=["efficientnet_b0", "resnet18"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
@@ -778,7 +797,7 @@ class MammoApp:
 
     def run_evaluate_and_report(self):
         def task():
-            self.log("\n=== AVALIACAO E GERACAO DE RELATORIO TXT ===")
+            self.log("\n--- Avaliação e geraçao de relatorio txt ---")
             self.log(f"Testando: {self.model_name.get()} | {self.task.get()} | {self.input_kind.get()} | {self.seg_method.get()}")
             metrics = evaluate_saved_model(
                 self.model_name.get(), 

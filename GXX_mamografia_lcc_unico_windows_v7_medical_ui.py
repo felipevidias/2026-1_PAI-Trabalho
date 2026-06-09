@@ -1,7 +1,34 @@
+# Trabalho de Processamento e Análise de Imagens
 # Grupo: G13
+#
+# Integrantes:
 # Iago Fereguetti Ribeiro - 815991 - Ciência da Computação - PUC Minas Coração Eucarístico
 # Felipe Vilhena Dias - 817294 - Ciência da Computação - PUC Minas Coração Eucarístico
 # Lucas Henrique Rocha Hauck - 816010 - Ciência da Computação - PUC Minas Coração Eucarístico
+#
+# Dataset:
+# LCC - mamografias da mama esquerda em incidência crânio-caudal
+#
+# Classes:
+# D = BI-RADS I
+# E = BI-RADS II
+# F = BI-RADS III
+# G = BI-RADS IV
+#
+# Tarefas avaliadas:
+# 1) Classificação em 4 classes: BI-RADS I, II, III e IV
+# 2) Classificação binária: baixa densidade (I+II) vs. alta densidade (III+IV)
+#
+# Redes utilizadas:
+# ResNet18 e EfficientNet-B0, com transferência de aprendizado
+#
+# Segmentações implementadas:
+# Otsu e Filtro Conexo por atributos
+#
+# Recursos do sistema:
+# Interface gráfica, visualização com zoom, segmentação automática,
+# treinamento, avaliação, matriz de confusão e Grad-CAM.
+
 
 import os
 import re

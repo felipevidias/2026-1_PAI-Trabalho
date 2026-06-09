@@ -1,17 +1,7 @@
-# -*- coding: utf-8 -*-
 # Grupo: G13
 # Iago Fereguetti Ribeiro - 815991 - Ciência da Computação - PUC Minas Coração Eucarístico
 # Felipe Vilhena Dias - 817294 - Ciência da Computação - PUC Minas Coração Eucarístico
 # Lucas Henrique Rocha Hauck - 816010 - Ciência da Computação - PUC Minas Coração Eucarístico
-"""
-GXX_mamografia_lcc_unico_windows_v7_medical_ui.py
-
-Script unico para o trabalho de Segmentacao e Classificacao de Imagens Mamograficas
-Dataset utilizado: LCC
-Redes utilizadas: EfficientNet + ResNet
- Segmentações utilizadas: Otsu, Filtro Conexo (Attribute Filtering)
-
-"""
 
 import os
 import re
@@ -38,12 +28,10 @@ try:
     from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 except ImportError as e:
     THIRD_PARTY_IMPORT_ERROR = e
-
-"""
------------------------------------------------------
-- Configurações gerais e declaração de constantes
-------------------------------------------------------
-"""
+ 
+# Configurações gerais
+# As pastas abaixo são criadas automaticamente quando o programa inicia.
+# O dataset processado fica separado dos modelos treinados e dos relatórios.
 
 APP_TITLE = "MammoClass AI - LCC | Interface Médica | EfficientNet + ResNet | V7"
 PROCESSED_DIR = Path("dataset_lcc_processado")
@@ -53,6 +41,9 @@ TEMP_DIR = Path("_temp_lcc")
 
 IMAGE_EXTENSIONS = {".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp"}
 
+# Mapeamento usado no trabalho:
+# D, E, F e G correspondem às quatro classes BI-RADS do dataset LCC.
+# No problema binário, I+II = baixa densidade e III+IV = alta densidade.
 CLASS_MAP = {
     "D": {"folder": "D_BIRADS_I", "birads": "BIRADS I", "label_4": 0, "label_bin": 0},
     "E": {"folder": "E_BIRADS_II", "birads": "BIRADS II", "label_4": 1, "label_bin": 0},
@@ -62,6 +53,7 @@ CLASS_MAP = {
 
 LABEL_NAMES_4 = ["BIRADS I", "BIRADS II", "BIRADS III", "BIRADS IV"]
 LABEL_NAMES_BIN = ["I+II", "III+IV"]
+# Rotações usadas como aumento de dados no conjunto de treino.
 AUGMENT_ANGLES = [-20, -10, 0, 10, 20]
 
 DEFAULT_IMAGE_SIZE = 224
@@ -69,14 +61,9 @@ DEFAULT_EPOCHS = 5
 DEFAULT_BATCH_SIZE = 8
 DEFAULT_LR = 1e-3
 
-
-
-
-"""
------------------------------------------------------
-- Utilitários e arquivos de log
-------------------------------------------------------
-"""
+# Funções auxiliares
+# Estas funções tratam criação de pastas, reconhecimento de imagens,
+# identificação da classe pelo nome/caminho e validação das dependências.
 
 def ensure_dirs():
     MODELS_DIR.mkdir(exist_ok=True)
@@ -130,12 +117,9 @@ def check_dependencies_or_show_help():
     root.destroy()
     return False
 
-
-"""
----------------------------------------------------------
-- Leitura, normalização e segmentação da mama
----------------------------------------------------------
-"""
+# Leitura, normalização e segmentação da mama
+# A normalização usa percentis para reduzir a influência de pixels extremos.
+# Isso ajuda a lidar tanto com imagens em 8 bits quanto em 16 bits.
 def read_image_as_uint8_gray(path: Path) -> np.ndarray:
     img = Image.open(path)
     arr = np.array(img)
@@ -157,6 +141,8 @@ def read_image_as_uint8_gray(path: Path) -> np.ndarray:
     return arr.astype(np.uint8)
 
 def segment_otsu(gray: np.ndarray):
+    # Método base: suaviza a imagem, calcula o limiar de Otsu,
+    # limpa a máscara com morfologia e mantém o maior componente.
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     white_ratio = np.mean(th > 0)
@@ -181,6 +167,8 @@ def segment_otsu(gray: np.ndarray):
     return segmented, mask
 
 def segment_morphological_reconstruction(gray: np.ndarray):
+    # Filtro Conexo simplificado: a ideia é remover componentes pequenos
+    # ou externos e preservar o componente principal associado à mama.
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
@@ -205,6 +193,7 @@ def segment_morphological_reconstruction(gray: np.ndarray):
     return segmented, final_mask
 
 def segment_breast_region(gray: np.ndarray, method="Otsu (Padrão)"):
+    # A interface chama esta função para alternar entre os métodos.
     if method == "Filtro Conexo (Attribute Filtering)":
         return segment_morphological_reconstruction(gray)
     else:
@@ -214,20 +203,19 @@ def save_gray_png(arr: np.ndarray, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(arr.astype(np.uint8)).save(path)
 
-
-"""
----------------------------
-- Preparação do dataset
----------------------------
-"""
+# Preparação do dataset
+# A divisão treino/teste segue o enunciado: imagens com numeração múltipla
+# de 4 vão para teste; as demais ficam no treino.
 
 def extract_lcc_source(source_path: Path, log=print) -> Path:
+    # Aceita tanto uma pasta já extraída quanto um .zip do LCC.
+    # Se houver arquivos .rar dentro do zip, o 7-Zip é usado para extração.
     source_path = Path(source_path)
     if source_path.is_dir():
-        log(f"[OK] Usando pasta ja extraida: {source_path}")
+        log(f"[OK] Usando pasta já extraída: {source_path}")
         return source_path
     if source_path.suffix.lower() != ".zip":
-        raise ValueError("Selecione o LCC.zip ou uma pasta ja extraida do LCC.")
+        raise ValueError("Selecione o LCC.zip ou uma pasta já extraída do LCC.")
     seven_zip = find_7zip_executable()
     if seven_zip is None:
         raise RuntimeError("Nao encontrei o 7-Zip no Windows.")
@@ -253,6 +241,8 @@ def extract_lcc_source(source_path: Path, log=print) -> Path:
     return rar_out
 
 def prepare_dataset_lcc(source_path: Path, log=print, seg_method="Otsu (Padrão)"):
+    # Recria a pasta processada para garantir que o treino use apenas
+    # imagens geradas pelo método de segmentação selecionado.
     ensure_dirs()
     if PROCESSED_DIR.exists():
         shutil.rmtree(PROCESSED_DIR)
@@ -269,6 +259,7 @@ def prepare_dataset_lcc(source_path: Path, log=print, seg_method="Otsu (Padrão)
         if cls is None: continue
         img_num = get_image_number(img_path.name)
         if img_num is None: continue
+        # múltiplos de 4 são separados para teste.
         split = "test" if img_num % 4 == 0 else "train"
         class_folder = CLASS_MAP[cls]["folder"]
         gray = read_image_as_uint8_gray(img_path)
@@ -303,15 +294,14 @@ def prepare_dataset_lcc(source_path: Path, log=print, seg_method="Otsu (Padrão)
     log("\n[OK] Dataset preparado.")
     return manifest
 
-"""
-----------------------------------
-- Dataset pytorch e redes neurais
-----------------------------------
-"""
+# Dataset PyTorch e modelos de rede neural
+# O dataset aplica aumento de dados apenas no treino. No teste, a imagem é
+# usada sem rotação para não alterar artificialmente a avaliação.
 
 
 
 class MammographyDataset(Dataset):
+    """Dataset usado pelo PyTorch para carregar as imagens processadas."""
 
     def __init__(self, root_dir: Path, task="4classes", train=True, image_size=224):
         self.root_dir = Path(root_dir)
@@ -332,6 +322,7 @@ class MammographyDataset(Dataset):
 
 
     def __len__(self):
+        # No treino, cada imagem aparece uma vez para cada rotação definida.
         return len(self.samples) * len(AUGMENT_ANGLES) if self.train else len(self.samples)
     
 
@@ -349,6 +340,7 @@ class MammographyDataset(Dataset):
         return self.tf(img), torch.tensor(label, dtype=torch.long), str(path)
 
 def build_model(model_name="efficientnet_b0", num_classes=4, pretrained=True):
+    # Transfer learning: congela o extrator convolucional e troca a saída.
     model_name = model_name.lower()
     if model_name == "efficientnet_b0":
         weights = models.EfficientNet_B0_Weights.DEFAULT if pretrained else None
@@ -375,15 +367,14 @@ def get_device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def model_file_name(model_name, task, input_kind, seg_method=""):
+    # O método de segmentação entra no nome do arquivo para evitar confundir
+    # modelos treinados com Otsu e com Filtro Conexo.
     suffix = f"_{safe_stem(Path(seg_method))}" if input_kind == "segmentado" and seg_method else ""
     return MODELS_DIR / f"{model_name}_{task}_{input_kind}{suffix}.pt"
 
-
-"""
-------------------------------------
-- Treinamento, avaliação e GRAD-CAM
-------------------------------------
-"""
+# Treinamento, avaliação e Grad-CAM
+# Os pesos pré-treinados são usados como extratores de características.
+# A camada final é substituída conforme a tarefa: binária ou quatro classes.
 
 def train_selected_model(model_name, task, input_kind, epochs=5, batch_size=8, lr=1e-3, log=print, seg_method=""):
     ensure_dirs()
@@ -443,6 +434,8 @@ def train_selected_model(model_name, task, input_kind, epochs=5, batch_size=8, l
     return evaluate_saved_model(model_name, task, input_kind, log=log, seg_method=seg_method)
 
 def evaluate_in_memory(model, loader, num_classes, device):
+    # Avalia o modelo sem alterar pesos. Para a tarefa binária, calcula
+    # sensibilidade e especificidade diretamente da matriz de confusão.
     model.eval()
     y_true, y_pred = [], []
     with torch.no_grad():
@@ -493,7 +486,7 @@ def evaluate_saved_model(model_name, task, input_kind, log=print, seg_method="")
     suffix = f"_{safe_stem(Path(seg_method))}" if input_kind == "segmentado" and seg_method else ""
     result_path = RESULTS_DIR / f"metricas_{model_name}_{task}_{input_kind}{suffix}.txt"
     
-    relatorio_txt = [
+    relatório_txt = [
         "-----------------------------------------",
         "Relatorio da avaliação do modelo treinado",
         "-----------------------------------------",
@@ -514,7 +507,7 @@ def evaluate_saved_model(model_name, task, input_kind, log=print, seg_method="")
         "----------------------------------------"
     ]
     
-    texto_final = "\n".join(relatorio_txt)
+    texto_final = "\n".join(relatório_txt)
     with open(result_path, "w", encoding="utf-8") as f: 
         f.write(texto_final)
         
@@ -523,6 +516,8 @@ def evaluate_saved_model(model_name, task, input_kind, log=print, seg_method="")
     return metrics
 
 def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, log=print, seg_method="Otsu (Padrão)"):
+    # Classifica uma imagem isolada e gera o mapa Grad-CAM correspondente.
+    # A imagem usada no mapa depende da opção selecionada: original ou segmentada.
     device = get_device()
     model, checkpoint = load_checkpoint_model(model_name, task, input_kind, seg_method)
     model = model.to(device).eval()
@@ -539,6 +534,7 @@ def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, 
     saved = {"activation": None}
     target_layer = model.layer4[-1] if checkpoint["model_name"].startswith("resnet") else model.features[-1]
     def forward_hook(m, i, o):
+        # Guarda a ativação da última região convolucional para o Grad-CAM.
         saved["activation"] = o
         if hasattr(o, "retain_grad"): o.retain_grad()
     handle = target_layer.register_forward_hook(forward_hook)
@@ -567,12 +563,10 @@ def classify_image_with_gradcam(image_path: Path, model_name, task, input_kind, 
         return pred_label, confidence, used_img, overlay_rgb, out_path
     finally:
         handle.remove()
-
-"""
-------------------------------------
-- Interface gráfica com Tkinter
-------------------------------------
-"""
+     
+# Interface gráfica
+# A interface concentra as etapas principais: preparar dataset, treinar,
+# avaliar modelos salvos, testar uma segmentação e gerar Grad-CAM.
 
 UI = {"bg": "#EEF6F8", "card": "#FFFFFF", "text": "#12313A", "muted": "#5D7680", "primary": "#0F7C90", "primary_dark": "#0B5F6E", "success": "#138A5B", "warning": "#E28A10", "danger": "#C24141", "border": "#C9DDE3", "canvas": "#0B1F27"}
 
@@ -601,6 +595,8 @@ def apply_modern_theme(root):
     style.map("TNotebook.Tab", background=[("selected", UI["card"])], foreground=[("selected", UI["primary"])])
 
 class ImagePanel(ttk.LabelFrame):
+    """Painel de imagem com zoom, ajuste à tela e arraste com o mouse."""
+
     def __init__(self, parent, title="Imagem"):
         super().__init__(parent, text=title, padding=8)
         self.original_pil = None
@@ -705,7 +701,7 @@ class MammoApp:
         tabs.add(tab_ai, text="2. IA")
         tabs.add(tab_test, text="3. Testes")
 
-        # Aba 1
+        # Controles de preparação do dataset.
         ds = ttk.LabelFrame(tab_data, text="Dataset LCC")
         ds.pack(fill=tk.X, pady=6)
         ttk.Entry(ds, textvariable=self.source_path).pack(fill=tk.X, padx=6, pady=5)
@@ -713,7 +709,7 @@ class MammoApp:
         self.add_button(ds, "Testar método em UMA imagem", self.run_preview_seg, style="Warning.TButton")
         self.add_button(ds, "Preparar dataset e segmentar", self.run_prep, style="Success.TButton", pady=8)
 
-        # Aba 2 - IA 
+        # Configuração dos modelos e do treinamento.
         ai = ttk.LabelFrame(tab_ai, text="Configuração da Rede")
         ai.pack(fill=tk.X, pady=6)
         ttk.Combobox(ai, textvariable=self.model_name, values=["efficientnet_b0", "resnet18"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
@@ -737,7 +733,7 @@ class MammoApp:
 
         self.add_button(train_frame, "Treinar modelo", self.run_train, style="Warning.TButton")
 
-        # Aba 3 - Testes
+        # Avaliação de modelos salvos e geração de Grad-CAM.
         test_cfg = ttk.LabelFrame(tab_test, text="Seleção do Modelo e Segmentação")
         test_cfg.pack(fill=tk.X, pady=6)
         ttk.Combobox(test_cfg, textvariable=self.model_name, values=["efficientnet_b0", "resnet18"], state="readonly").pack(fill=tk.X, padx=6, pady=3)
@@ -764,6 +760,7 @@ class MammoApp:
         self.root.update_idletasks()
 
     def run_threaded(self, func):
+        # Executa tarefas demoradas sem congelar a interface.
         def wrapper():
             for b in self.buttons_to_lock: b.config(state=tk.DISABLED)
             try: func()
@@ -780,7 +777,7 @@ class MammoApp:
 
     def run_evaluate_and_report(self):
         def task():
-            self.log("\n--- Avaliação e geraçao de relatorio txt ---")
+            self.log("\n--- Avaliação e geração de relatório txt ---")
             self.log(f"Testando: {self.model_name.get()} | {self.task.get()} | {self.input_kind.get()} | {self.seg_method.get()}")
             metrics = evaluate_saved_model(
                 self.model_name.get(), 

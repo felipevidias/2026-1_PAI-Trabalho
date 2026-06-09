@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# Grupo: G13
+# Iago Fereguetti Ribeiro - 815991 - Ciência da Computação - PUC Minas Coração Eucarístico
+# Felipe Vilhena Dias - 817294 - Ciência da Computação - PUC Minas Coração Eucarístico
+# Lucas Henrique Rocha Hauck - 816010 - Ciência da Computação - PUC Minas Coração Eucarístico
 """
 GXX_mamografia_lcc_unico_windows_v7_medical_ui.py
 

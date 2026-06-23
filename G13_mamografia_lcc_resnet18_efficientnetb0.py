@@ -285,7 +285,6 @@ def prepare_dataset_lcc(source_path: Path, log=print, seg_method="Otsu (Padrão)
 
 
 class MammographyDataset(Dataset):
-    """Dataset usado pelo PyTorch para carregar as imagens processadas."""
 
     def __init__(self, root_dir: Path, task="4classes", train=True, image_size=224):
         self.root_dir = Path(root_dir)
